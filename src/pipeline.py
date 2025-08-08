@@ -41,12 +41,16 @@ print("All models loaded successfully.")
 
 
 # --- Core Pipeline Function ---
-def process_query(image_path: str, text_prompt: str, output_path: str):
+def process_query(image_path: str, text_prompt: str, output_path: str, negative_prompt: str = None):
+    """
+    Takes an image, a positive prompt, and an optional negative prompt, finds the top 3 matching regions,
+    and saves the cropped images and a visualization.
+    """
     # 1. LOAD IMAGE
     image_bgr = cv2.imread(image_path)
     if image_bgr is None:
         print(f"Error: Could not load image from {image_path}")
-        return
+        return None, None
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
     # 2. DETECT WITH GROUNDING DINO
@@ -60,20 +64,29 @@ def process_query(image_path: str, text_prompt: str, output_path: str):
 
     # Apply Non-Maximum Suppression
     print(f"Found {len(detections)} initial detections. Applying NMS...")
-    # THIS IS THE FINAL FIX: Add class_agnostic=True
     detections = detections.with_nms(class_agnostic=True, threshold=NMS_THRESHOLD)
     print(f"Found {len(detections)} detections after NMS.")
 
     if len(detections) == 0:
         print("No objects found. Try a different prompt or lower thresholds.")
-        return
+        return None, None
 
-    # 3. RE-RANK WITH CLIP
+    # 3. RE-RANK WITH CLIP (including Negative Prompting)
     print("Re-ranking detections with CLIP...")
+    # Preprocess the POSITIVE text prompt for CLIP
     text_inputs = clip_processor(text=[text_prompt], return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
         text_features = clip_model.get_text_features(**text_inputs)
         text_features /= text_features.norm(p=2, dim=-1, keepdim=True)
+
+    # Preprocess the NEGATIVE text prompt for CLIP, if it exists
+    neg_text_features = None
+    if negative_prompt and negative_prompt.strip(): # Check if prompt is not empty
+        print(f"Using negative prompt: '{negative_prompt}'")
+        neg_text_inputs = clip_processor(text=[negative_prompt], return_tensors="pt", padding=True).to(DEVICE)
+        with torch.no_grad():
+            neg_text_features = clip_model.get_text_features(**neg_text_inputs)
+            neg_text_features /= neg_text_features.norm(p=2, dim=-1, keepdim=True)
 
     clip_scores = []
     for box in detections.xyxy:
@@ -86,43 +99,57 @@ def process_query(image_path: str, text_prompt: str, output_path: str):
             image_features = clip_model.get_image_features(**image_inputs)
             image_features /= image_features.norm(p=2, dim=-1, keepdim=True)
         
-        similarity = (text_features @ image_features.T).item()
-        clip_scores.append(similarity)
+        # Calculate POSITIVE cosine similarity
+        positive_similarity = (text_features @ image_features.T).item()
+        
+        # Calculate NEGATIVE cosine similarity, if applicable
+        negative_similarity = 0.0
+        if neg_text_features is not None:
+            negative_similarity = (neg_text_features @ image_features.T).item()
+            
+        # The final CLIP score is positive minus negative
+        final_clip_score = positive_similarity - negative_similarity
+        clip_scores.append(final_clip_score)
     
-    # 4. COMBINE SCORES AND SELECT BEST BOX
+    # 4. COMBINE SCORES AND SELECT TOP 3 BOXES
     dino_scores = detections.confidence
-    combined_scores = 0.6 * np.array(dino_scores) + 0.4 * np.array(clip_scores)
+    # We adjust the combined score formula to give more weight to the refined CLIP score
+    combined_scores = 0.4 * np.array(dino_scores) + 0.6 * np.array(clip_scores)
 
-    best_box_index = np.argmax(combined_scores)
-    best_box_xyxy = detections.xyxy[best_box_index]
-    best_score = combined_scores[best_box_index]
-    print(f"Selected best box with combined score: {best_score:.4f}")
+    num_results = min(3, len(detections))
+    top_indices = np.argsort(combined_scores)[::-1][:num_results]
 
-    # 5. OUTPUT THE FINAL CROP
-    x1, y1, x2, y2 = [int(coord) for coord in best_box_xyxy]
-    final_crop = image_bgr[y1:y2, x1:x2]
-    cv2.imwrite(output_path, final_crop)
-    print(f"✅ Success! Cropped image saved to {output_path}")
+    print(f"Top {num_results} detections selected:")
+    top_boxes = detections.xyxy[top_indices]
+    top_scores = combined_scores[top_indices]
 
-    box_annotator = sv.BoxAnnotator()
-    label = f"BEST: {text_prompt}"
+    # 5. OUTPUT THE FINAL CROPS AND VISUALIZATION
+    output_paths = []
+    for i, index in enumerate(top_indices):
+        box = detections.xyxy[index]
+        x1, y1, x2, y2 = [int(coord) for coord in box]
+        
+        base, ext = os.path.splitext(output_path)
+        crop_path = f"{base}_rank{i+1}{ext}"
+        
+        cv2.imwrite(crop_path, image_bgr[y1:y2, x1:x2])
+        output_paths.append(crop_path)
+        print(f"  Rank {i+1}: Box {index} with score {combined_scores[index]:.4f}. Saved to {crop_path}")
+
+    box_annotator = sv.BoxAnnotator(thickness=2, text_thickness=1, text_scale=0.5)
+    labels = [
+        f"Rank {i+1} (Score: {score:.2f})"
+        for i, score in enumerate(top_scores)
+    ]
+
+    top_detections = sv.Detections(xyxy=top_boxes)
     annotated_image = box_annotator.annotate(
         scene=image_bgr.copy(),
-        detections=sv.Detections(xyxy=np.array([best_box_xyxy])),
-        labels=[label]
+        detections=top_detections,
+        labels=labels
     )
-    cv2.imwrite("images/final_annotated.jpg", annotated_image)
-    print("   -> Also saved 'images/final_annotated.jpg' for visualization.")
+    annotated_image_path = "images/final_annotated_multiple.jpg"
+    cv2.imwrite(annotated_image_path, annotated_image)
+    print(f"✅ Success! Top {num_results} crops saved. Visualization saved to {annotated_image_path}")
 
-
-# --- Main Execution Block ---
-if __name__ == "__main__":
-    IMAGE_TO_PROCESS = "images/market.jpg"
-    PROMPT = "a vendor selling vegetables to a customer"
-    OUTPUT_CROP_PATH = "images/output_crop.jpg"
-    
-    process_query(
-        image_path=IMAGE_TO_PROCESS,
-        text_prompt=PROMPT,
-        output_path=OUTPUT_CROP_PATH
-    )
+    return output_paths, annotated_image_path
