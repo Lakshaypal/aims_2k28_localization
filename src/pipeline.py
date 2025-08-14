@@ -14,16 +14,20 @@ sys.path.append(GROUNDING_DINO_REPO_PATH)
 
 from groundingdino.util.inference import Model
 from transformers import CLIPProcessor, CLIPModel
+from segment_anything import sam_model_registry, SamPredictor
 
 # --- Configuration ---
 CONFIG_PATH = os.path.join(GROUNDING_DINO_REPO_PATH, "groundingdino/config/GroundingDINO_SwinT_OGC.py")
 WEIGHTS_PATH = "weights/groundingdino_swint_ogc.pth"
+SAM_CHECKPOINT_PATH = "weights/sam_vit_b_01ec64.pth"
+SAM_ENCODER_VERSION = "vit_b"
 CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
 BOX_THRESHOLD = 0.25
 TEXT_THRESHOLD = 0.25
 NMS_THRESHOLD = 0.7
 MIN_FINAL_SCORE = 0.25
 HIGH_DINO_CONFIDENCE_THRESHOLD = 0.90
+MIN_MASK_DENSITY = 0.05 # A mask must fill at least 5% of its bounding box
 
 # --- Device Setup ---
 DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
@@ -35,6 +39,9 @@ grounding_dino_model = Model(model_config_path=CONFIG_PATH, model_checkpoint_pat
 print("Loading CLIP model...")
 clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(DEVICE)
 clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
+print("Loading Segment Anything Model (SAM)...")
+sam_model = sam_model_registry[SAM_ENCODER_VERSION](checkpoint=SAM_CHECKPOINT_PATH).to(device=DEVICE)
+sam_predictor = SamPredictor(sam_model)
 print("All models loaded successfully.")
 
 
@@ -55,7 +62,7 @@ def process_query(image_path: str, text_prompt: str, output_path: str, negative_
     if len(detections) == 0:
         return None, None
 
-    # --- Disqualification Logic using a Boolean Mask (THE FIX) ---
+    # --- Disqualification Logic using a Boolean Mask ---
     if negative_prompt and negative_prompt.strip():
         print(f"Applying negative prompt filter: '{negative_prompt}'")
         
@@ -67,7 +74,6 @@ def process_query(image_path: str, text_prompt: str, output_path: str, negative_
             neg_text_features = clip_model.get_text_features(**neg_text_inputs).float()
             neg_text_features /= neg_text_features.norm(p=2, dim=-1, keepdim=True)
 
-        # Create a boolean mask to store which detections to keep
         mask = np.ones(len(detections), dtype=bool)
         for i, box in enumerate(detections.xyxy):
             x1, y1, x2, y2 = [int(coord) for coord in box]
@@ -82,21 +88,17 @@ def process_query(image_path: str, text_prompt: str, output_path: str, negative_
             positive_sim = (pos_text_features @ image_features.T).item()
             negative_sim = (neg_text_features @ image_features.T).item()
 
-            # If it matches negative better, mark it for removal
             if negative_sim > positive_sim:
                 mask[i] = False
-
-        # Apply the mask to filter out disqualified detections
+        
         detections = detections[mask]
 
         if len(detections) == 0:
             print("All detections were disqualified by the negative prompt.")
             return None, None
-        
         print(f"Kept {len(detections)} detections after disqualification.")
 
-    # --- Proceed with Re-ranking on the SURVIVING detections ---
-    # (The rest of the code is unchanged and will now work correctly)
+    # --- Re-ranking Logic ---
     print("Re-ranking surviving detections with CLIP...")
     text_inputs = clip_processor(text=[text_prompt], return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
@@ -116,36 +118,70 @@ def process_query(image_path: str, text_prompt: str, output_path: str, negative_
     
     dino_scores = detections.confidence
     combined_scores = 0.4 * np.array(dino_scores) + 0.6 * np.array(clip_scores)
+    
+    # Get all indices, sorted from best to worst, to iterate through
+    top_indices = np.argsort(combined_scores)[::-1]
 
-    num_results = min(3, len(detections))
-    top_indices = np.argsort(combined_scores)[::-1][:num_results]
+    # --- 5. GENERATE MASKS AND APPLY FILTERS ---
+    print("Generating masks with SAM and applying filters...")
+    sam_predictor.set_image(image_rgb)
     
-    top_scores = combined_scores[top_indices]
-    
-    if not top_scores.size > 0:
+    final_output_paths = []
+    final_top_boxes = []
+    final_top_scores = []
+
+    for i in top_indices:
+        if len(final_output_paths) >= 3:
+            break
+
+        box = detections.xyxy[i]
+        score = combined_scores[i]
+        dino_score = detections.confidence[i]
+
+        # Filter 1: Confidence Gate
+        if score < MIN_FINAL_SCORE and dino_score < HIGH_DINO_CONFIDENCE_THRESHOLD:
+            continue
+
+        # Filter 2: Mask Density Gate
+        input_box = box[None, :]
+        masks, _, _ = sam_predictor.predict(box=input_box, multimask_output=False)
+        mask = masks[0]
+        
+        x1, y1, x2, y2 = [int(c) for c in box]
+        box_area = (x2 - x1) * (y2 - y1)
+        density = 0.0
+        if box_area > 0:
+            mask_pixel_count = np.sum(mask)
+            density = mask_pixel_count / box_area
+            if density < MIN_MASK_DENSITY:
+                print(f"  Discarding low-density mask (density: {density:.4f})")
+                continue
+        
+        print(f"  Accepting result with score {score:.4f} and density {density:.4f}")
+        
+        masked_image_rgba = np.zeros((image_bgr.shape[0], image_bgr.shape[1], 4), dtype=np.uint8)
+        masked_image_rgba[mask, :3] = image_bgr[mask]
+        masked_image_rgba[mask, 3] = 255
+        final_crop = masked_image_rgba[y1:y2, x1:x2]
+
+        base, _ = os.path.splitext(output_path)
+        crop_path = f"{base}_rank{len(final_output_paths)+1}.png"
+        cv2.imwrite(crop_path, final_crop)
+        
+        final_output_paths.append(crop_path)
+        final_top_boxes.append(box)
+        final_top_scores.append(score)
+
+    # --- 6. FINAL CHECK AND VISUALIZATION ---
+    if not final_output_paths:
+        print("No confident results found after all filters.")
         return None, None
 
-    best_dino_score = detections.confidence[top_indices[0]]
-
-    if top_scores[0] < MIN_FINAL_SCORE and best_dino_score < HIGH_DINO_CONFIDENCE_THRESHOLD:
-        print(f"No confident objects found.")
-        return None, None
-
-    top_boxes = detections.xyxy[top_indices]
-    output_paths = []
-    for i, _ in enumerate(top_indices):
-        box = top_boxes[i]
-        x1, y1, x2, y2 = [int(coord) for coord in box]
-        base, ext = os.path.splitext(output_path)
-        crop_path = f"{base}_rank{i+1}{ext}"
-        cv2.imwrite(crop_path, image_bgr[y1:y2, x1:x2])
-        output_paths.append(crop_path)
-    
     box_annotator = sv.BoxAnnotator(thickness=2, text_thickness=1, text_scale=0.5)
-    labels = [f"Rank {i+1} (Score: {score:.2f})" for i, score in enumerate(top_scores)]
-    top_detections = sv.Detections(xyxy=top_boxes)
-    annotated_image = box_annotator.annotate(scene=image_bgr.copy(), detections=top_detections, labels=labels)
+    labels = [f"Rank {i+1} (Score: {score:.2f})" for i, score in enumerate(final_top_scores)]
+    final_detections = sv.Detections(xyxy=np.array(final_top_boxes))
+    annotated_image = box_annotator.annotate(scene=image_bgr.copy(), detections=final_detections, labels=labels)
     annotated_image_path = "images/final_annotated_multiple.jpg"
     cv2.imwrite(annotated_image_path, annotated_image)
 
-    return output_paths, annotated_image_path
+    return final_output_paths, annotated_image_path

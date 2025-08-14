@@ -7,6 +7,26 @@ import numpy as np
 import cv2
 import os
 import sys
+import subprocess
+
+# --- Automated Dependency Check and Installation ---
+try:
+    import segment_anything
+    print("✅ 'segment_anything' library is already installed.")
+except ImportError:
+    print("⚠️ 'segment_anything' not found. Attempting to install...")
+    try:
+        # Get the path to the current python executable
+        python_executable = sys.executable
+        # Use subprocess to run pip install
+        subprocess.check_call([python_executable, "-m", "pip", "install", "segment-anything-py"])
+        print("✅ Successfully installed 'segment-anything-py'. Please restart the script.")
+        # Exit so the user can restart and the new package is recognized.
+        exit()
+    except Exception as e:
+        print(f"❌ Failed to install 'segment-anything-py'. Error: {e}")
+        print("   Please activate your conda environment ('conda activate scene_loc') and run 'pip install segment-anything-py' manually.")
+        exit()
 
 # Setup paths and import your pipeline function
 GROUNDING_DINO_REPO_PATH = os.path.join(os.getcwd(), "GroundingDINO")
