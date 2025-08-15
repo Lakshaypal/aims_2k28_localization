@@ -1,5 +1,3 @@
-# src/pipeline.py
-
 import os
 import sys
 import torch
@@ -7,8 +5,6 @@ import cv2
 import numpy as np
 import supervision as sv
 from PIL import Image
-
-# Add GroundingDINO repository path to the system path
 GROUNDING_DINO_REPO_PATH = os.path.join(os.getcwd(), "GroundingDINO")
 sys.path.append(GROUNDING_DINO_REPO_PATH)
 
@@ -118,8 +114,6 @@ def process_query(image_path: str, text_prompt: str, output_path: str, negative_
     
     dino_scores = detections.confidence
     combined_scores = 0.4 * np.array(dino_scores) + 0.6 * np.array(clip_scores)
-    
-    # Get all indices, sorted from best to worst, to iterate through
     top_indices = np.argsort(combined_scores)[::-1]
 
     # --- 5. GENERATE MASKS AND APPLY FILTERS ---

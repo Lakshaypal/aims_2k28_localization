@@ -1,5 +1,3 @@
-# src/app.py
-
 import gradio as gr
 import time
 from PIL import Image

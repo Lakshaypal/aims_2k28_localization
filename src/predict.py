@@ -1,13 +1,7 @@
-# src/predict.py
-
 import os
 import sys
-
-# Add GroundingDINO repository path to the system path
-# This is the crucial step to fix the import error
 GROUNDING_DINO_REPO_PATH = os.path.join(os.getcwd(), "GroundingDINO")
 sys.path.append(GROUNDING_DINO_REPO_PATH)
-
 import torch
 import cv2
 import supervision as sv
