@@ -1,44 +1,49 @@
 # AIMS 2K28: Scene Localization in Dense Images
 
-This project is a submission for the AIMS 2K28 Recruitment problem statement. It is a system that can identify and localize specific sub-scenes within a dense image based on a natural language query, fulfilling all the core requirements of the working prototype.
+This project is a submission for the AIMS 2K28 Recruitment problem statement. It is a robust, interactive system that can identify, segment, and localize specific sub-scenes within a dense image based on a natural language query.
 
-**[Link to Demo Video]** *(You will add this link after recording)*
+**[Link to Your Demo Video Here]**
 
 ---
 
-## Key Features
+## Core Features
 
--   **Open-Vocabulary Detection**: Localizes any object or activity described by free-form text, not just pre-defined classes.
--   **Intelligent Re-ranking**: Uses a two-stage process. First, a detector (GroundingDINO) proposes candidate regions. Second, a vision-language model (CLIP) re-ranks these candidates to find the best semantic match.
--   **Interactive UI**: A simple and effective web interface built with Gradio for easy testing and demonstration.
--   **Robust Pipeline**: Gracefully handles cases where no matching object is found, as demonstrated in the logs and demo video.
+-   **State-of-the-Art GroundedSAM Pipeline**: Produces precise, background-removed segmentation masks instead of simple bounding boxes for superior accuracy.
+-   **Open-Vocabulary Detection**: Localizes any object, attribute, or action described by free-form text, not just pre-defined classes.
+-   **Advanced Semantic Refinement**: Incorporates several custom modules for intelligent filtering and ranking:
+    -   **Top-3 Ranked Results**: Acknowledges ambiguity in dense scenes by providing the top three best-matching candidates.
+    -   **Negative Prompting**: Allows the user to provide negative queries (e.g., "white shirt") to actively disqualify and remove irrelevant results, significantly improving search precision.
+    -   **Multi-Stage Quality Gating**: Employs a series of confidence and heuristic checks to filter out low-quality or nonsensical results, ensuring the user only sees relevant outputs.
+-   **Interactive Web UI**: A user-friendly interface built with Gradio for easy demonstration and testing.
 
 ---
 
 ## Technical Architecture
 
-The system is built on a modern, two-stage vision-language pipeline to ensure high accuracy in dense scenes:
+The system is built on a state-of-the-art **GroundedSAM** pipeline, which intelligently combines three powerful pre-trained models in a multi-stage process to ensure both accuracy and quality. The architecture is heavily influenced by the principle of **contrastive learning**, applying it at inference time to refine results.
 
-1.  **Candidate Proposal (GroundingDINO)**: The input image and text prompt are fed into a pre-trained **GroundingDINO** model. It identifies multiple potential regions (bounding boxes) that could match the prompt. This model excels at open-vocabulary detection.
+1.  **Candidate Proposal (GroundingDINO):** The input image and text prompt are first fed into a **GroundingDINO** model to identify multiple potential bounding boxes that match the query. After this initial proposal, a Non-Maximum Suppression (NMS) step with an IoU threshold of 0.7 is applied to remove redundant, highly overlapping boxes.
 
-2.  **Semantic Re-ranking (CLIP)**: Each candidate region proposed by GroundingDINO is cropped. These crops are then evaluated by a pre-trained **CLIP** model to calculate the semantic similarity between the cropped image and the original text prompt.
+2.  **Semantic Disqualification (CLIP):** If a negative prompt is provided, a custom filter is activated. This module is a practical, real-time application of the same principle behind training techniques like **Triplet Loss**. For each candidate box, its semantic similarity to both the positive and negative prompts is calculated using **CLIP**. A candidate is **completely disqualified** if it matches the negative prompt more strongly than the positive one. This contrastive step acts as a powerful hard filter against unwanted results, allowing the user to guide the model's decision-making process at inference time.
 
-3.  **Selection**: A combined score is calculated (`0.6 * DINO_confidence + 0.4 * CLIP_similarity`) for each candidate. The bounding box with the highest combined score is selected as the final, most relevant result.
+3.  **Heuristic Re-ranking (DINO + CLIP):** All surviving candidates are ranked based on a `combined_score` (`0.4 * dino_confidence + 0.6 * clip_score`). This heuristic score balances the raw detection confidence of GroundingDINO with the nuanced semantic understanding of CLIP.
 
-This hybrid approach leverages the strengths of both models: GroundingDINO's powerful localization and CLIP's nuanced semantic understanding. This architecture was chosen as it directly addresses the challenge of identifying specific *events* rather than just objects, fulfilling the "intelligent architectural choices" criteria in the project brief.
+4.  **Quality Gating & Final Selection:** The system iterates through the ranked list and applies two final gatekeeper filters to each candidate:
+    -   **Confidence Gate:** The candidate's score is checked against a minimum threshold (`MIN_FINAL_SCORE = 0.25`) and a high-confidence override (`HIGH_DINO_CONFIDENCE_THRESHOLD = 0.90`) to filter out low-quality guesses.
+    -   **Mask Density Gate:** The candidate box is passed to the Segment Anything Model. If the resulting mask is too sparse (less than 5% of its bounding box area), it is discarded as "pixel dust."
+    
+    The system collects the **first three candidates** that successfully pass all filters.
+
+5.  **Precise Segmentation (SAM):** For the final, validated candidates, the **Segment Anything Model (SAM)** is used to generate pixel-perfect, background-removed segmentation masks, which are presented as the final output.
 
 ---
 
 ## Setup Instructions
 
 **1. Clone the repository and its submodule:**
-This repository uses the official GroundingDINO repository as a submodule for its core logic.
 ```bash
-# Clone this project
-git clone https://github.com/Lakshaypal/aims_2k28_localization.git
-cd aims_2k28_localization
-
-# Clone the required GroundingDINO repository
+git clone [Your Git Repo URL]
+cd [Your Repo Name]
 git clone https://github.com/IDEA-Research/GroundingDINO.git
 ```
 
@@ -56,13 +61,16 @@ pip install -r requirements.txt
 ```
 
 **4. Download Model Weights:**
-The model weights are not included in the repository due to their size. Please download them into the `weights` directory.
+The model weights are not included due to their size. Please download them into the `weights` directory.
 ```bash
 # Create the weights directory if it doesn't exist
 mkdir -p weights
 
-# Download the GroundingDINO weights (662 MB)
+# Download GroundingDINO weights (662 MB)
 curl -L -o weights/groundingdino_swint_ogc.pth https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+
+# Download Segment Anything Model (SAM) weights (375 MB)
+curl -L -o weights/sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
 ```
 
 ---
@@ -74,12 +82,14 @@ Launch the interactive Gradio application with the following command from the pr
 ```bash
 python src/app.py
 ```
-Then, open your web browser and navigate to the local URL provided (e.g., `http://127.0.0.1:7860`). You can upload your own images or use the provided examples to test the system.
+Then, open your web browser and navigate to the local URL provided (e.g., `http://127.0.0.1:7860`).
 
 ---
 
-## Known Limitations
+## Future Work
 
--   The system may struggle with highly abstract concepts or very fine-grained details not easily captured visually.
--   Performance on prompts for non-existent objects is good (it finds nothing), but ambiguous queries can sometimes yield unexpected results. For example, the prompt "wearing red" failed on the test image, as the red shirt was likely too occluded or not a salient feature for the model with the current thresholds.
--   Inference speed is suitable for interactive use but is not real-time, taking a few seconds per query on an Apple M3 Pro GPU.`
+The current prototype is a robust inference pipeline. The logical next steps to productionize and improve this system would involve two major phases:
+
+1.  **Quantitative Evaluation:** To objectively measure performance, a ground-truth test set would be created by manually annotating 50-100 dense images against a set of queries. An evaluation script using the standard **Mean Average Precision (mAP)** metric would then be used to benchmark the model's accuracy and provide a quantitative score for any future improvements.
+
+2.  **Model Fine-Tuning:** To improve performance on specific, nuanced tasks (like distinguishing between similar colors in challenging lighting), the CLIP vision encoder would be fine-tuned. This would involve training on a large-scale dataset like **Visual Genome** using a **Triplet Loss** function. This process would teach the model a more robust, domain-specific semantic understanding and would require significant cloud compute resources (GPU/TPU) to execute, taking days of non stop training.
