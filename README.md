@@ -2,7 +2,7 @@
 
 This project is a submission for the AIMS 2K28 Recruitment problem statement. It is a robust, interactive system that can identify, segment, and localize specific sub-scenes within a dense image based on a natural language query. The final prototype exceeds the initial requirements by implementing a state-of-the-art GroundedSAM pipeline and several custom modules for advanced semantic refinement and quality control.
 
-**🎬 [Drive Link (Demo Vedio)](https://drive.google.com/file/d/1hXu-7xfE6Awf8NKWoz-nhikCckRx--Yw/view?usp=share_link)**
+**🎬 Drive Link: [Demo Vedio](https://drive.google.com/file/d/1hXu-7xfE6Awf8NKWoz-nhikCckRx--Yw/view?usp=share_link)**
 
 ---
 
