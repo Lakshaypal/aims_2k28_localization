@@ -2,7 +2,7 @@
 
 This project is a submission for the AIMS 2K28 Recruitment problem statement. It is a robust, interactive system that can identify, segment, and localize specific sub-scenes within a dense image based on a natural language query. The final prototype exceeds the initial requirements by implementing a state-of-the-art GroundedSAM pipeline and several custom modules for advanced semantic refinement and quality control.
 
-**🎬 [Link to Your Demo Video Here]**
+**🎬 [Drive Link (Demo Vedio)](https://drive.google.com/file/d/1hXu-7xfE6Awf8NKWoz-nhikCckRx--Yw/view?usp=share_link)**
 
 ---
 
@@ -53,8 +53,8 @@ brew install git-lfs
 **2. Clone the repository:**
 When you clone the repository, Git LFS will automatically download the large model weight files, ensuring all necessary components are present.
 ```bash
-git clone [Your Git Repo URL]
-cd [Your Repo Name]
+git clone [https://github.com/Lakshaypal/aims_2k28_localization]
+cd [AIMS 2K28: Scene Localization in Dense Images]
 ```
 *(Note: If the weights do not download automatically, run `git lfs pull` inside the repository.)*
 
