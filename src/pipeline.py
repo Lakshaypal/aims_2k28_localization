@@ -116,7 +116,7 @@ def process_query(image_path: str, text_prompt: str, output_path: str, negative_
     combined_scores = 0.4 * np.array(dino_scores) + 0.6 * np.array(clip_scores)
     top_indices = np.argsort(combined_scores)[::-1]
 
-    # --- 5. GENERATE MASKS AND APPLY FILTERS ---
+    # --- GENERATE MASKS AND APPLY FILTERS ---
     print("Generating masks with SAM and applying filters...")
     sam_predictor.set_image(image_rgb)
     
